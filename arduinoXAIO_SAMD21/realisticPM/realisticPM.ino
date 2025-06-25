@@ -50,14 +50,13 @@ uint32_t colorWheel(uint16_t pos, uint8_t brightness) {
   pos = pos % 1536;
   uint8_t r = 0, g = 0, b = 0;
 
-  if (pos < 256)         { r = 255;         g = pos;         b = 0; }
-  else if (pos < 512)    { r = 511 - pos;   g = 255;         b = 0; }
-  else if (pos < 768)    { r = 0;           g = 255;         b = pos - 512; }
-  else if (pos < 1024)   { r = 0;           g = 1023 - pos;  b = 255; }
-  else if (pos < 1280)   { r = pos - 1024;  g = 0;           b = 255; }
-  else                   { r = 255;         g = 0;           b = 1535 - pos; }
+  if (pos < 256)         { r = 200;         g = 55;         b = 0; }
+  else if (pos < 512)    { r = 0;   g = 255;         b = 0; }
+  else if (pos < 1024)   { r = 0;           g = 0;  b = 255; }
+  else                   { r = 255;         g = 0;           b = 0; }
 
-  return strip.Color((r * brightness) / 255, (g * brightness) / 255, (b * brightness) / 255);
+return strip.Color((r * brightness) / 255, (g * brightness) / 255, (b * brightness) / 255);
+
 }
 
 // Display a number on 4-digit 7-segment
@@ -116,3 +115,8 @@ void loop() {
     hue = (hue + 7) % 1536;
   }
 }
+
+
+
+
+
