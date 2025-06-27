@@ -6,6 +6,9 @@
 #define MAX_BRIGHTNESS 51     // 20% of 255
 #define ANALOG_PIN     A2
 const int dacPin = A0;        // DAC output pin (true analog out on SAMD21)
+const int ledCurrentSens = A3; 
+uint16_t ledCurrent = 0;
+uint16_t dacValue = 400;
 
 Adafruit_NeoPixel strip(NUM_LEDS, PIN, NEO_GRB + NEO_KHZ800);
 
@@ -45,28 +48,35 @@ void setup() {
   }
 }
 
-// Color wheel with brightness scaling
-uint32_t colorWheel(uint16_t pos, uint8_t brightness) {
-  pos = pos % 1536;
-  uint8_t r = 0, g = 0, b = 0;
-
-  if (pos < 256)         { r = 200;         g = 55;         b = 0; }
-  else if (pos < 512)    { r = 0;   g = 255;         b = 0; }
-  else if (pos < 1024)   { r = 0;           g = 0;  b = 255; }
-  else                   { r = 255;         g = 0;           b = 0; }
-
-return strip.Color((r * brightness) / 255, (g * brightness) / 255, (b * brightness) / 255);
-
-}
-
 // Display a number on 4-digit 7-segment
-void displayNumber(int value, uint16_t hue, uint8_t brightness) {
+void displayNumber(int value, uint8_t c, uint8_t brightness) {
   int d0 = (value / 1000) % 10;
   int d1 = (value / 100)  % 10;
   int d2 = (value / 10)   % 10;
   int d3 = value % 10;
 
-  uint32_t color = colorWheel(hue, brightness);
+    uint8_t r = 0, g = 0, b = 0;
+
+  switch(c){
+    case 'b': b = (255 * brightness) / 255; //blue
+              if(b == 0) r = 1;
+            break;
+    case 'r': r = (255 * brightness) / 255;//red
+              if(r == 0) r = 1;
+            break;
+    case 'g': g = (255 * brightness) / 255;//green
+              if(g == 0) g = 1;
+            break;
+    case 'y': r = (128 * brightness) / 255;//green
+              g = (128 * brightness) / 255;//green
+              if(g == 0) g = 1;
+              if(r == 0) r = 1;
+            break;        
+  }
+   
+
+
+  uint32_t color = strip.Color(r, g, b);
 
   for (int digit = 0; digit < 4; digit++) {
     int number = (digit == 0) ? d0 : (digit == 1) ? d1 : (digit == 2) ? d2 : d3;
@@ -89,6 +99,14 @@ unsigned long lastUpdate = 0;
 int tenths = 0;
 uint16_t hue = 0;
 
+void ledBrightnessCtrlTxt(uint8_t brightness){
+  ledCurrent = analogRead(ledCurrentSens);
+  if(ledCurrent < brightness) if(dacValue < 1023) dacValue++;
+  if(ledCurrent > brightness && ledCurrent > 8) if(dacValue > 0) dacValue --;
+
+  analogWrite(dacPin, dacValue);
+}
+
 void loop() {
   unsigned long now = millis();
   if (now - lastUpdate >= 100) {
@@ -105,18 +123,11 @@ void loop() {
 
     // Inverted brightness & DAC output
     uint8_t brightness = map(avgAnalog, 0, 1023, MAX_BRIGHTNESS, 0);
-    uint16_t dacValue  = map(avgAnalog, 0, 1023, 1023, 0); // full 0–1023 range for DAC
+   
+    
+    displayNumber(ledCurrent, 'y', brightness);
+    ledBrightnessCtrlTxt(brightness);
 
-    displayNumber(tenths, hue, brightness);
-    analogWrite(dacPin, dacValue);
-
-    tenths++;
-    if (tenths >= 10000) tenths = 0;
-    hue = (hue + 7) % 1536;
   }
 }
-
-
-
-
 
