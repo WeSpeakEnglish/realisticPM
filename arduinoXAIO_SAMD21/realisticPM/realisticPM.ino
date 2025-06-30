@@ -1,6 +1,7 @@
 #include <Wire.h>
 #include <Adafruit_NeoPixel.h>
 #include "SparkFun_Particle_Sensor_SN-GCJA5_Arduino_Library.h"
+#include "antirtos.h"
 
 #define PIN            9
 #define NUM_LEDS       106
@@ -15,6 +16,8 @@ const int sensEN = SENSOR_EN_PIN;
 const int ledCurrentSens = A3; 
 uint16_t ledCurrent = 0;
 uint16_t dacValue = 400;
+
+void TC4_Handler();  // Interrupt handler prototype
 
 Adafruit_NeoPixel strip(NUM_LEDS, PIN, NEO_GRB + NEO_KHZ800);
 SFE_PARTICLE_SENSOR myAirSensor;
@@ -35,6 +38,8 @@ uint16_t analogBuffer[FILTER_SIZE];
 uint32_t analogSum = 0;
 uint8_t analogIndex = 0;
 bool bufferFilled = false;
+
+fQ F1(4);
 
 void setup() {
   strip.begin();
@@ -59,6 +64,39 @@ void setup() {
       idx += ledsPerSegment[digit];
     }
   }
+
+    // Enable GCLK for TC4 and TC5 (clock generator 0)
+  GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(TC4_GCLK_ID) |  // Generic Clock TC4 and TC5
+                      GCLK_CLKCTRL_CLKEN | 
+                      GCLK_CLKCTRL_GEN_GCLK0;
+  while (GCLK->STATUS.bit.SYNCBUSY);
+
+  // Reset TC4
+  TC4->COUNT16.CTRLA.reg = TC_CTRLA_SWRST;
+  while (TC4->COUNT16.STATUS.bit.SYNCBUSY || TC4->COUNT16.CTRLA.bit.SWRST);
+
+  // Set timer mode 16-bit, prescaler 256
+  TC4->COUNT16.CTRLA.reg = TC_CTRLA_MODE_COUNT16 |    // 16-bit mode
+                           TC_CTRLA_PRESCALER_DIV256; // Prescaler 256
+  while (TC4->COUNT16.STATUS.bit.SYNCBUSY);
+
+  // Calculate compare value for 100 ms:
+  // Timer freq = 48 MHz / 256 = 187500 Hz
+  // Counts for 100 ms = 0.1 * 187500 = 18750 counts
+  TC4->COUNT16.CC[0].reg = 18750; 
+  while (TC4->COUNT16.STATUS.bit.SYNCBUSY);
+
+  // Enable interrupt on compare match 0
+  TC4->COUNT16.INTENSET.reg = TC_INTENSET_MC0;
+
+  // Enable TC4 IRQ at NVIC level
+  NVIC_EnableIRQ(TC4_IRQn);
+  NVIC_SetPriority(TC4_IRQn, 0);
+
+  // Start the timer
+  TC4->COUNT16.CTRLA.reg |= TC_CTRLA_ENABLE;
+  while (TC4->COUNT16.STATUS.bit.SYNCBUSY);
+  
 }
 
 // Display a number on 4-digit 7-segment
@@ -119,13 +157,9 @@ void ledBrightnessCtrlTxt(uint8_t brightness){
 
   analogWrite(dacPin, dacValue);
 }
+uint8_t brightness = 0;
 
-void loop() {
-  unsigned long now = millis();
-  if (now - lastUpdate >= 100) {
-    lastUpdate = now;
-
-    // Moving average filter
+void calculateAnalog(){
     analogSum -= analogBuffer[analogIndex];
     analogBuffer[analogIndex] = analogRead(ANALOG_PIN);
     analogSum += analogBuffer[analogIndex];
@@ -135,12 +169,29 @@ void loop() {
     uint16_t avgAnalog = bufferFilled ? analogSum / FILTER_SIZE : analogBuffer[0];
 
     // Inverted brightness & DAC output
-    uint8_t brightness = map(avgAnalog, 0, 1023, MAX_BRIGHTNESS, 0);
-   
+    brightness = map(avgAnalog, 0, 1023, MAX_BRIGHTNESS, 0);
+    ledBrightnessCtrlTxt(brightness);
+}
+
+void displayPM(){
     float pm2_5 = myAirSensor.getPM2_5();
     displayNumber((int)(pm2_5*10.0), 'y', brightness);
-    ledBrightnessCtrlTxt(brightness);
+}
 
+void loop() {
+F1.pull();
+}
+
+// TC4 interrupt handler
+void TC4_Handler() {
+  int static counter = 0;
+  // Check for compare match 0 interrupt
+  if (TC4->COUNT16.INTFLAG.bit.MC0) {
+    TC4->COUNT16.INTFLAG.reg = TC_INTFLAG_MC0;  // Clear interrupt flag
+     if(!(counter++ % 10) ) F1.push(displayPM);
+     F1.push(calculateAnalog);
   }
 }
+
+
 
