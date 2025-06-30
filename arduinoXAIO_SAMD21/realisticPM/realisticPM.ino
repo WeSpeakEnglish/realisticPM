@@ -1,16 +1,23 @@
+#include <Wire.h>
 #include <Adafruit_NeoPixel.h>
+#include "SparkFun_Particle_Sensor_SN-GCJA5_Arduino_Library.h"
 
 #define PIN            9
 #define NUM_LEDS       106
 #define DP_LED_INDEX   105
 #define MAX_BRIGHTNESS 51     // 20% of 255
 #define ANALOG_PIN     A2
+#define SENSOR_EN_PIN  D8
+
 const int dacPin = A0;        // DAC output pin (true analog out on SAMD21)
+const int sensEN = SENSOR_EN_PIN;
+
 const int ledCurrentSens = A3; 
 uint16_t ledCurrent = 0;
 uint16_t dacValue = 400;
 
 Adafruit_NeoPixel strip(NUM_LEDS, PIN, NEO_GRB + NEO_KHZ800);
+SFE_PARTICLE_SENSOR myAirSensor;
 
 // 7-segment map
 const uint8_t digit_segments[10][7] = {
@@ -37,6 +44,12 @@ void setup() {
   analogWriteResolution(10);  // DAC: 0–1023
 
   pinMode(dacPin, OUTPUT);
+  pinMode(sensEN, OUTPUT);
+
+  digitalWrite(sensEN,HIGH);
+
+  Wire.begin();
+  myAirSensor.begin();
 
   // Initialize LED segment indexing
   uint8_t idx = 0;
@@ -124,8 +137,8 @@ void loop() {
     // Inverted brightness & DAC output
     uint8_t brightness = map(avgAnalog, 0, 1023, MAX_BRIGHTNESS, 0);
    
-    
-    displayNumber(ledCurrent, 'y', brightness);
+    float pm2_5 = myAirSensor.getPM2_5();
+    displayNumber((int)(pm2_5*10.0), 'y', brightness);
     ledBrightnessCtrlTxt(brightness);
 
   }
