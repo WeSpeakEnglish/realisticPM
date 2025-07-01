@@ -48,10 +48,21 @@ float pm2_5 = 0.0;
 
 fQ F1(4);
 
-void setup() {
-  strip.begin();
+void ledCheck() {
+  for (int i = 0; i < NUM_LEDS; i++) {
+    strip.clear();
+    strip.setPixelColor(i, strip.Color(255, 255, 255)); // white at max brightness
+    strip.show();
+    delay(100);  // 0.1 second
+  }
   strip.clear();
   strip.show();
+}
+
+void setup() {
+  strip.begin();
+  
+
   analogReadResolution(10);   // 0–1023
   analogWriteResolution(10);  // DAC: 0–1023
 
@@ -62,7 +73,8 @@ void setup() {
 
   Wire.begin();
   myAirSensor.begin();
-
+  ledCheck(); 
+  
   // Initialize LED segment indexing
   uint8_t idx = 0;
   for (int digit = 0; digit < 4; digit++) {
