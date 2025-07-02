@@ -127,18 +127,23 @@ void displayNumber(int value, uint8_t c, uint8_t brightness) {
   }
 
   uint32_t color = strip.Color(r, g, b);
-  for (int digit = 0; digit < 4; digit++) {
-    int number = (digit == 0) ? d0 : (digit == 1) ? d1 : (digit == 2) ? d2 : d3;
-    if ((digit == 0 && d0 == 0 && d1 == 0) || (digit == 1 && d0 == 0 && d1 == 0)) continue;
-    for (int seg = 0; seg < 7; seg++) {
-      bool on = digit_segments[number][seg];
-      uint8_t start = segmentStartIndex[digit][seg];
-      uint8_t count = ledsPerSegment[digit];
-      for (int i = 0; i < count; i++) {
-        strip.setPixelColor(start + i, on ? color : 0);
-      }
+bool leadingZero = true;
+
+for (int digit = 0; digit < 4; digit++) {
+  int number = (digit == 0) ? d0 : (digit == 1) ? d1 : (digit == 2) ? d2 : d3;
+
+  bool skip = (leadingZero && digit < 2 && number == 0);
+  if (!skip) leadingZero = false;
+
+  for (int seg = 0; seg < 7; seg++) {
+    bool on = (!skip) && digit_segments[number][seg];
+    uint8_t start = segmentStartIndex[digit][seg];
+    uint8_t count = ledsPerSegment[digit];
+    for (int i = 0; i < count; i++) {
+      strip.setPixelColor(start + i, on ? color : 0);
     }
   }
+}
   strip.setPixelColor(DP_LED_INDEX, color);
   strip.show();
 }
