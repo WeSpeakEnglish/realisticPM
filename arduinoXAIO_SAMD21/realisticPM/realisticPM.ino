@@ -195,11 +195,16 @@ void displayPM() {
   if (pmIndex == 0) pmBufferFilled = true;
 
   float pmSum = 0;
+  char color = 'b';
   uint8_t count = pmBufferFilled ? PM_FILTER_SIZE : pmIndex;
   for (uint8_t i = 0; i < count; i++) pmSum += pmBuffer[i];
   float avgPM = pmSum / count;
-
-  displayNumber((int)avgPM, 'y', brightness);
+  int avgPM_int = (int)(avgPM + 0.5);
+  if(avgPM_int > 50) color = 'g';
+  if(avgPM_int > 150) color = 'y';
+  if(avgPM_int > 500) color = 'r';
+  
+  displayNumber((int)avgPM, color, brightness);
 }
 
 
