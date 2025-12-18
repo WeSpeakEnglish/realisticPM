@@ -70,8 +70,6 @@ void setup() {
   unsigned long t0 = millis();
   while (!Serial && (millis() - t0 < 2000)) { ; }
 
-  Serial.println("=== PM Sensor Starting ===");
-
   analogReadResolution(10);
   analogWriteResolution(10);
 
@@ -127,7 +125,6 @@ void setup() {
   TC4->COUNT16.CTRLA.reg |= TC_CTRLA_ENABLE;
   while (TC4->COUNT16.STATUS.bit.SYNCBUSY);
 
-  Serial.println("=== System Ready ===");
 }
 
 /* ---------------- Brightness control ---------------- */
@@ -215,13 +212,15 @@ void sendPMtoSerial() {
   float pm25 = myAirSensor.getPM2_5();
   float pm10 = myAirSensor.getPM10();
 
-  Serial.print("@PM10[");
-  Serial.print(pm10,1);
-  Serial.print("];PM2.5[");
-  Serial.print(pm25,1);
-  Serial.print("];PM1[");
-  Serial.print(pm1,1);
-  Serial.println("]@");
+  uint16_t v_pm10 = (uint16_t)(pm10 * 10.0f + 0.5f);
+  uint16_t v_pm25 = (uint16_t)(pm25 * 10.0f + 0.5f);
+  uint16_t v_pm1  = (uint16_t)(pm1  * 10.0f + 0.5f);
+
+  uint16_t checksum = v_pm10 + v_pm25 + v_pm1;
+
+  Serial.print("@PM");
+  Serial.printf("%04X%04X%04X%04X", v_pm10, v_pm25, v_pm1, checksum);
+  Serial.println();
 }
 
 /* ---------------- Loop ---------------- */
@@ -250,11 +249,11 @@ void TC4_Handler() {
     }
 
     // Every 10 seconds - serial output
-    if (tick100ms >= 100) {
+    if (tick100ms >= 10) {
       tick100ms = 0;
       F1.push(sendPMtoSerial);
     }
-// Reload CC[0] for next period (important for precise timing)
+// Reload CC[0] for next period
     TC4->COUNT16.CC[0].reg = 4688;
     while (TC4->COUNT16.STATUS.bit.SYNCBUSY);
   }
