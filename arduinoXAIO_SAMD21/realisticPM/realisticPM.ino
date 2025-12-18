@@ -8,10 +8,11 @@
 #define NUM_LEDS 106
 #define DP_LED_INDEX 105
 #define MAX_BRIGHTNESS 51
+#define MIN_BRIGHTNESS 2
 #define ANALOG_PIN A2
 #define SENSOR_EN_PIN D8
+#define DAC_PIN A0
 
-const int dacPin = A0;
 const int sensEN = SENSOR_EN_PIN;
 const int ledCurrentSens = A3;
 
@@ -73,7 +74,7 @@ void setup() {
   analogReadResolution(10);
   analogWriteResolution(10);
 
-  pinMode(dacPin, OUTPUT);
+  pinMode(DAC_PIN, OUTPUT);
   pinMode(sensEN, OUTPUT);
   digitalWrite(sensEN, HIGH);
 
@@ -91,6 +92,18 @@ void setup() {
       segmentStartIndex[d][s] = idx;
       idx += ledsPerSegment[d];
     }
+
+  /* -------- ADC Configuration -------- */  
+  while (ADC->STATUS.bit.SYNCBUSY);
+
+  // Select internal 1V reference
+   ADC->REFCTRL.bit.REFSEL = ADC_REFCTRL_REFSEL_INT1V_Val;
+  // Wait for sync
+   while (ADC->STATUS.bit.SYNCBUSY);
+  // Optional: Set gain to 1x (default may be different)
+  ADC->INPUTCTRL.bit.GAIN = ADC_INPUTCTRL_GAIN_1X_Val;
+  while (ADC->STATUS.bit.SYNCBUSY);
+  analogRead(A3);  // Discard this reading
 
   /* -------- TC4 Configuration -------- */
   // Calibrated for XIAO SAMD21 internal oscillator
@@ -132,7 +145,7 @@ void ledBrightnessCtrl(uint8_t target) {
   ledCurrent = analogRead(ledCurrentSens);
   if (ledCurrent < target && dacValue < 1023) dacValue++;
   if (ledCurrent > target && dacValue > 0) dacValue--;
-  analogWrite(dacPin, dacValue);
+  analogWrite(DAC_PIN, dacValue);
 }
 
 void calculateAnalog() {
@@ -144,7 +157,8 @@ void calculateAnalog() {
   if (!analogIndex) bufferFilled = true;
 
   uint16_t avg = bufferFilled ? analogSum / FILTER_SIZE : analogBuffer[0];
-  brightness = map(avg, 0, 1023, MAX_BRIGHTNESS, 0);
+
+  brightness = map(avg, 0, 1023, MAX_BRIGHTNESS, MIN_BRIGHTNESS);
   ledBrightnessCtrl(brightness);
 }
 
@@ -221,6 +235,17 @@ void sendPMtoSerial() {
   Serial.print("@PM");
   Serial.printf("%04X%04X%04X%04X", v_pm10, v_pm25, v_pm1, checksum);
   Serial.println();
+
+  uint16_t raw = analogRead(ledCurrentSens);
+  
+  uint32_t millivolts = (raw * 3300UL) / 1024UL;
+  
+  Serial.print("LED Current Sense (A3): ");
+  Serial.print(raw);          // Optional: print raw value for debugging
+  Serial.print(" (");
+  Serial.print(millivolts);
+  Serial.println(" mV)");
+
 }
 
 /* ---------------- Loop ---------------- */
