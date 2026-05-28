@@ -23,7 +23,7 @@ uint8_t brightness = MAX_BRIGHTNESS;
 
 Adafruit_NeoPixel strip(NUM_LEDS, PIN, NEO_GRB + NEO_KHZ800);
 SFE_PARTICLE_SENSOR myAirSensor;
-fQ F1(6);
+fQ F1(8);
 
 /* ---------------- Forward declarations ---------------- */
 void displayNumber(int value, uint8_t c, uint8_t brightness);
@@ -39,17 +39,17 @@ uint8_t segmentStartIndex[4][7];
 uint8_t ledsPerSegment[4] = {4,4,4,3};
 
 /* ---------------- Filters ---------------- */
-#define FILTER_SIZE 50
+#define FILTER_SIZE 32
 uint16_t analogBuffer[FILTER_SIZE];
 uint32_t analogSum = 0;
 uint8_t analogIndex = 0;
 bool bufferFilled = false;
 
-#define PM_FILTER_SIZE 100
+#define PM_FILTER_SIZE 32
 float pmBuffer[PM_FILTER_SIZE];
 uint8_t pmIndex = 0;
 bool pmBufferFilled = false;
-float pm2_5 = 0.0;
+float pm2_5 = 0.0f;
 
 /* ---------------- LED test ---------------- */
 void ledCheck() {
@@ -65,6 +65,9 @@ void ledCheck() {
 
 /* ---------------- Setup ---------------- */
 void setup() {
+  Wire.begin(); 
+  myAirSensor.begin();
+
   strip.begin();
 
   Serial.begin(9600);
@@ -80,11 +83,6 @@ void setup() {
 
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
-
-  Wire.begin();
-  myAirSensor.begin();
-
-  ledCheck();
 
   uint8_t idx = 0;
   for (int d=0; d<4; d++)
@@ -103,7 +101,7 @@ void setup() {
   // Optional: Set gain to 1x (default may be different)
   ADC->INPUTCTRL.bit.GAIN = ADC_INPUTCTRL_GAIN_1X_Val;
   while (ADC->STATUS.bit.SYNCBUSY);
-  analogRead(A3);  // Discard this reading
+  analogRead(ledCurrentSens);  // Discard this reading
 
   /* -------- TC4 Configuration -------- */
   // Calibrated for XIAO SAMD21 internal oscillator
@@ -138,6 +136,15 @@ void setup() {
   TC4->COUNT16.CTRLA.reg |= TC_CTRLA_ENABLE;
   while (TC4->COUNT16.STATUS.bit.SYNCBUSY);
 
+  //for (int i = 0; i < PM_FILTER_SIZE; i++){
+ //   updatePM();
+ //   delay(100);
+ // }
+  
+
+  ledCheck(); 
+
+ 
 }
 
 /* ---------------- Brightness control ---------------- */
@@ -238,7 +245,7 @@ void sendPMtoSerial() {
 
   uint16_t raw = analogRead(ledCurrentSens);
   
-  uint32_t millivolts = (raw * 3300UL) / 1024UL;
+  uint32_t millivolts = (raw * 1000UL) / 1023UL;
   
   Serial.print("LED Current Sense (A3): ");
   Serial.print(raw);          // Optional: print raw value for debugging
@@ -267,15 +274,16 @@ void TC4_Handler() {
     // Every 100 ms - brightness control
     F1.push(calculateAnalog);
 
-    // Every 500 ms - update sensor and display
+    // Every 500 ms - update display
     if ((tick100ms % 5) == 0) {
-      F1.push(updatePM);
+      
       F1.push(displayPM);
     }
 
-    // Every 10 seconds - serial output
+    // Every 10 seconds - serial output and read PM
     if (tick100ms >= 10) {
       tick100ms = 0;
+      F1.push(updatePM);
       F1.push(sendPMtoSerial);
     }
 // Reload CC[0] for next period
