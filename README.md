@@ -8,7 +8,7 @@
 </p>
 
 # RealisticPM
-**RealisticPM** is a on-wall air quality monitor, powered via USB-C connector
+**RealisticPM** is a on-wall air quality monitor, powered via USB-C connector and based on [Seeeduino XIAO SAMD21](https://wiki.seeedstudio.com/Seeeduino-XIAO/)
 
 ## Features
 
