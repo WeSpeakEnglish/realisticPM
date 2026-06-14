@@ -10,10 +10,11 @@
 # RealisticPM
 **RealisticPM** is a on-wall air quality monitor, powered via USB-C connector
 
-**Features:**
--Big color display
--Standard USB-C connector
--1.5W power supply
--High Quality LEDs
--COM port data output (via virtual COM port)
--Open source code
+## Features
+
+- Big color display
+- Standard USB-C connector
+- Low power consumption (1.5 W)
+- High-quality LEDs
+- COM port data output (virtual COM port)
+- Open-source code
