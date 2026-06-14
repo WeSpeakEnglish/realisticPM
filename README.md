@@ -20,4 +20,5 @@
 - Low power consumption (1.5 W)
 - High-quality LEDs
 - COM port data output (virtual COM port)
+- Pin-out for developing purposes
 - Open-source code
