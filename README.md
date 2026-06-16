@@ -11,7 +11,7 @@
 
 
 # RealisticPM
-**RealisticPM** is a on-wall air quality monitor, powered via USB-C connector and based on [Seeeduino XIAO SAMD21](https://wiki.seeedstudio.com/Seeeduino-XIAO/)
+**RealisticPM** is an on-wall air quality monitor, powered via USB-C connector and based on [Seeeduino XIAO SAMD21](https://wiki.seeedstudio.com/Seeeduino-XIAO/)
 
 ## Features
 
@@ -22,3 +22,8 @@
 - COM port data output (virtual COM port)
 - Pin-out for developing purposes
 - Open-source code
+- Automatic brightness control
+- Fused via resettable fuse
+- Automatic color control via addressing LEDs
+- PM2.5 value display step as low as 0.1 ug/m3
+- Sizes of 364x164mm (PCBA), ideal for work environment / sport rooms / clean rooms
