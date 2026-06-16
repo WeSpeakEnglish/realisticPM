@@ -17,7 +17,7 @@
 
 - Big color display
 - Standard USB-C connector
-- Low power consumption (1.5 W)
+- Low power consumption (2 W max)
 - High-quality LEDs
 - COM port data output (virtual COM port)
 - Pin-out for developing purposes
@@ -26,4 +26,4 @@
 - Fused via resettable fuse
 - Automatic color control via addressing LEDs
 - PM2.5 value display step as low as 0.1 ug/m3
-- Sizes of 364x164mm (PCBA), ideal for work environment / sport rooms / clean rooms
+- Sizes of 364x164mm, ideal for work environment / sport rooms / clean rooms
