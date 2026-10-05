@@ -16,6 +16,19 @@
 const int sensEN = SENSOR_EN_PIN;
 const int ledCurrentSens = A3;
 
+/* ---------------- Scheduling (in 100 ms ticks) ---------------- */
+#define DISPLAY_PERIOD_TICKS  5     // 500 ms
+#define SERIAL_PERIOD_TICKS   100   // 10 s
+
+/* ---------------- Task queue ---------------- */
+typedef void (*TaskFn)(void);
+fQ F1(32);                          // plenty of headroom
+volatile uint32_t droppedTasks = 0; // counts tasks lost because queue was full
+
+static inline void pushTask(TaskFn task) {
+  if (F1.push(task)) droppedTasks++;   // non-zero return = queue full
+}
+
 /* ---------------- Globals ---------------- */
 uint16_t ledCurrent = 0;
 uint16_t dacValue = 400;
@@ -23,7 +36,7 @@ uint8_t brightness = MAX_BRIGHTNESS;
 
 Adafruit_NeoPixel strip(NUM_LEDS, PIN, NEO_GRB + NEO_KHZ800);
 SFE_PARTICLE_SENSOR myAirSensor;
-fQ F1(8);
+bool sensorOK = false;
 
 /* ---------------- Forward declarations ---------------- */
 void displayNumber(int value, uint8_t c, uint8_t brightness);
@@ -63,88 +76,86 @@ void ledCheck() {
   strip.show();
 }
 
+/* ---------------- ADC setup ---------------- */
+void setupADC() {
+  analogReadResolution(10);
+  analogWriteResolution(10);
+
+  while (ADC->STATUS.bit.SYNCBUSY);
+  ADC->REFCTRL.bit.REFSEL = ADC_REFCTRL_REFSEL_INT1V_Val;   // internal 1 V reference
+  while (ADC->STATUS.bit.SYNCBUSY);
+  ADC->INPUTCTRL.bit.GAIN = ADC_INPUTCTRL_GAIN_1X_Val;
+  while (ADC->STATUS.bit.SYNCBUSY);
+  analogRead(ledCurrentSens);   // discard first reading
+}
+
+/* ---------------- TC4 setup: 100 ms tick ---------------- */
+void setupTC4() {
+  PM->APBCMASK.reg |= PM_APBCMASK_TC4;
+
+  // GCLK0 (48 MHz) -> TC4/TC5
+  GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(TC4_GCLK_ID) |
+                      GCLK_CLKCTRL_GEN_GCLK0 |
+                      GCLK_CLKCTRL_CLKEN;
+  while (GCLK->STATUS.bit.SYNCBUSY);
+
+  TC4->COUNT16.CTRLA.reg = TC_CTRLA_SWRST;
+  while (TC4->COUNT16.STATUS.bit.SYNCBUSY);
+  while (TC4->COUNT16.CTRLA.bit.SWRST);
+
+  TC4->COUNT16.CTRLA.reg = TC_CTRLA_MODE_COUNT16 |
+                           TC_CTRLA_WAVEGEN_MFRQ |
+                           TC_CTRLA_PRESCALER_DIV1024;
+
+  // 48 MHz / 1024 = 46875 Hz. MFRQ period = CC0 + 1 ticks.
+  // 4687 + 1 = 4688 ticks = 100.01 ms
+  TC4->COUNT16.CC[0].reg = 4687;
+  while (TC4->COUNT16.STATUS.bit.SYNCBUSY);
+
+  TC4->COUNT16.INTENSET.reg = TC_INTENSET_MC0;
+  NVIC_SetPriority(TC4_IRQn, 2);
+  NVIC_EnableIRQ(TC4_IRQn);
+
+  TC4->COUNT16.CTRLA.reg |= TC_CTRLA_ENABLE;
+  while (TC4->COUNT16.STATUS.bit.SYNCBUSY);
+}
+
 /* ---------------- Setup ---------------- */
 void setup() {
-  Wire.begin(); 
-  myAirSensor.begin();
+  // Power the sensor BEFORE talking to it
+  pinMode(sensEN, OUTPUT);
+  digitalWrite(sensEN, HIGH);
 
-  strip.begin();
+  pinMode(DAC_PIN, OUTPUT);
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
 
   Serial.begin(9600);
   unsigned long t0 = millis();
   while (!Serial && (millis() - t0 < 2000)) { ; }
 
-  analogReadResolution(10);
-  analogWriteResolution(10);
+  delay(100);                    // let the sensor boot
+  Wire.begin();
+  sensorOK = myAirSensor.begin();
+  Serial.print("Start. Sensor begin: ");
+  Serial.println(sensorOK ? "OK" : "FAILED");
 
-  pinMode(DAC_PIN, OUTPUT);
-  pinMode(sensEN, OUTPUT);
-  digitalWrite(sensEN, HIGH);
-
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, LOW);
+  strip.begin();
+  strip.clear();
+  strip.show();
 
   uint8_t idx = 0;
-  for (int d=0; d<4; d++)
-    for (int s=0; s<7; s++) {
+  for (int d = 0; d < 4; d++)
+    for (int s = 0; s < 7; s++) {
       segmentStartIndex[d][s] = idx;
       idx += ledsPerSegment[d];
     }
 
-  /* -------- ADC Configuration -------- */  
-  while (ADC->STATUS.bit.SYNCBUSY);
+  setupADC();
 
-  // Select internal 1V reference
-   ADC->REFCTRL.bit.REFSEL = ADC_REFCTRL_REFSEL_INT1V_Val;
-  // Wait for sync
-   while (ADC->STATUS.bit.SYNCBUSY);
-  // Optional: Set gain to 1x (default may be different)
-  ADC->INPUTCTRL.bit.GAIN = ADC_INPUTCTRL_GAIN_1X_Val;
-  while (ADC->STATUS.bit.SYNCBUSY);
-  analogRead(ledCurrentSens);  // Discard this reading
+  ledCheck();                    // runs BEFORE the timer starts
 
-  /* -------- TC4 Configuration -------- */
-  // Calibrated for XIAO SAMD21 internal oscillator
-  // Using DIV256 to stay within 16-bit counter range
-  PM->APBCMASK.reg |= PM_APBCMASK_TC4;
-
-  // Select GCLK0 (48 MHz) as source for TC4/TC5
-  GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(TC4_GCLK_ID) |   // TC4 uses GCM_TC4_TC5
-                      GCLK_CLKCTRL_GEN_GCLK0 |
-                      GCLK_CLKCTRL_CLKEN;
-  while (GCLK->STATUS.bit.SYNCBUSY);
-
-  // Reset TC4
-  TC4->COUNT16.CTRLA.reg = TC_CTRLA_SWRST;
-  while (TC4->COUNT16.STATUS.bit.SYNCBUSY);
-  while (TC4->COUNT16.CTRLA.bit.SWRST);
-
-  // Configure 16-bit mode, Match Frequency (MFRQ) waveform, prescaler DIV1024
-  TC4->COUNT16.CTRLA.reg = TC_CTRLA_MODE_COUNT16 |
-                           TC_CTRLA_WAVEGEN_MFRQ |
-                           TC_CTRLA_PRESCALER_DIV1024;
-
-  // Calculate precise value for 100 ms:
-  // Timer clock = 48 MHz / 1024 ≈ 46875 Hz → ticks per 100 ms = 4687.5 → use 4688 (error ~0.02%)
-  TC4->COUNT16.CC[0].reg = 4688;
-  while (TC4->COUNT16.STATUS.bit.SYNCBUSY);
-
-  // Enable MC0 interrupt (match on CC0)
-  TC4->COUNT16.INTENSET.reg = TC_INTENSET_MC0;
-  NVIC_EnableIRQ(TC4_IRQn);
-
-  TC4->COUNT16.CTRLA.reg |= TC_CTRLA_ENABLE;
-  while (TC4->COUNT16.STATUS.bit.SYNCBUSY);
-
-  //for (int i = 0; i < PM_FILTER_SIZE; i++){
- //   updatePM();
- //   delay(100);
- // }
-  
-
-  ledCheck(); 
-
- 
+  setupTC4();                    // start 100 ms tick last
 }
 
 /* ---------------- Brightness control ---------------- */
@@ -175,7 +186,7 @@ void updatePM() {
 }
 
 void displayPM() {
-  pmBuffer[pmIndex++] = pm2_5 * 10.0;
+  pmBuffer[pmIndex++] = pm2_5 * 10.0f;
   if (pmIndex >= PM_FILTER_SIZE) {
     pmIndex = 0;
     pmBufferFilled = true;
@@ -183,9 +194,10 @@ void displayPM() {
 
   float sum = 0;
   uint8_t count = pmBufferFilled ? PM_FILTER_SIZE : pmIndex;
-  for (uint8_t i=0; i<count; i++) sum += pmBuffer[i];
+  for (uint8_t i = 0; i < count; i++) sum += pmBuffer[i];
 
-  int avg = (int)((sum / count) + 0.5);
+  int avg = (int)((sum / count) + 0.5f);
+  if (avg > 9999) avg = 9999;
   char color = (avg > 500) ? 'r' : (avg > 150) ? 'y' : (avg > 50) ? 'g' : 'b';
 
   displayNumber(avg, color, brightness);
@@ -200,26 +212,26 @@ void displayNumber(int value, uint8_t c, uint8_t brightness) {
     value % 10
   };
 
-  uint8_t r=0,g=0,b=0;
-  if (c=='r') r=brightness;
-  if (c=='g') g=brightness;
-  if (c=='b') b=brightness;
-  if (c=='y') r=g=brightness/2;
+  uint8_t r = 0, g = 0, b = 0;
+  if (c == 'r') r = brightness;
+  if (c == 'g') g = brightness;
+  if (c == 'b') b = brightness;
+  if (c == 'y') r = g = brightness / 2;
 
-  uint32_t col = strip.Color(r,g,b);
+  uint32_t col = strip.Color(r, g, b);
   bool leadingZero = true;
 
-  for (int digit=0; digit<4; digit++) {
+  for (int digit = 0; digit < 4; digit++) {
     int num = d[digit];
     bool skip = leadingZero && digit < 2 && num == 0;
     if (!skip) leadingZero = false;
 
-    for (int seg=0; seg<7; seg++) {
+    for (int seg = 0; seg < 7; seg++) {
       bool on = (!skip) && digit_segments[num][seg];
       uint8_t start = segmentStartIndex[digit][seg];
       uint8_t cnt = ledsPerSegment[digit];
-      for (int i=0; i<cnt; i++)
-        strip.setPixelColor(start+i, on ? col : 0);
+      for (int i = 0; i < cnt; i++)
+        strip.setPixelColor(start + i, on ? col : 0);
     }
   }
 
@@ -236,23 +248,17 @@ void sendPMtoSerial() {
   uint16_t v_pm10 = (uint16_t)(pm10 * 10.0f + 0.5f);
   uint16_t v_pm25 = (uint16_t)(pm25 * 10.0f + 0.5f);
   uint16_t v_pm1  = (uint16_t)(pm1  * 10.0f + 0.5f);
-
   uint16_t checksum = v_pm10 + v_pm25 + v_pm1;
 
-  Serial.print("@PM");
-  Serial.printf("%04X%04X%04X%04X", v_pm10, v_pm25, v_pm1, checksum);
-  Serial.println();
+  char buf[32];
+  int n = snprintf(buf, sizeof(buf), "@PM%04X%04X%04X%04X\r\n",
+                   v_pm10, v_pm25, v_pm1, checksum);
 
-  uint16_t raw = analogRead(ledCurrentSens);
-  
-  uint32_t millivolts = (raw * 1000UL) / 1023UL;
-  
-  Serial.print("LED Current Sense (A3): ");
-  Serial.print(raw);          // Optional: print raw value for debugging
-  Serial.print(" (");
-  Serial.print(millivolts);
-  Serial.println(" mV)");
+  // One single write (one USB packet) instead of three separate prints
+  if (n > 0) Serial.write((const uint8_t*)buf, n);
 
+  // Debug: uncomment to watch for lost tasks (should stay 0)
+  // Serial.print("dropped: "); Serial.println(droppedTasks);
 }
 
 /* ---------------- Loop ---------------- */
@@ -260,34 +266,30 @@ void loop() {
   F1.pull();
 }
 
-/* ---------------- TC4 ISR - fires every 100ms ---------------- */
+/* ---------------- TC4 ISR - fires every 100 ms ---------------- */
 void TC4_Handler() {
-  static uint8_t tick100ms = 0;
-  static unsigned long isrCount = 0;
+  static uint8_t tickSerial  = 0;
+  static uint8_t tickDisplay = 0;
 
   if (TC4->COUNT16.INTFLAG.bit.MC0) {
     TC4->COUNT16.INTFLAG.reg = TC_INTFLAG_MC0;
 
-    isrCount++;
-    tick100ms++;
-
-    // Every 100 ms - brightness control
-    F1.push(calculateAnalog);
+    // Every 10 s - read PM and send to serial (pushed first = runs first)
+    if (++tickSerial >= SERIAL_PERIOD_TICKS) {
+      tickSerial = 0;
+      pushTask(updatePM);
+      pushTask(sendPMtoSerial);
+    }
 
     // Every 500 ms - update display
-    if ((tick100ms % 5) == 0) {
-      
-      F1.push(displayPM);
+    if (++tickDisplay >= DISPLAY_PERIOD_TICKS) {
+      tickDisplay = 0;
+      pushTask(displayPM);
     }
 
-    // Every 10 seconds - serial output and read PM
-    if (tick100ms >= 10) {
-      tick100ms = 0;
-      F1.push(updatePM);
-      F1.push(sendPMtoSerial);
-    }
-// Reload CC[0] for next period
-    TC4->COUNT16.CC[0].reg = 4688;
-    while (TC4->COUNT16.STATUS.bit.SYNCBUSY);
+    // Every 100 ms - brightness control
+    pushTask(calculateAnalog);
+
+    // No CC[0] reload needed in MFRQ mode
   }
 }
