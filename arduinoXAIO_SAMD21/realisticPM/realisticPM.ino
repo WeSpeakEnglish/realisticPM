@@ -251,7 +251,7 @@ void sendPMtoSerial() {
   uint16_t checksum = v_pm10 + v_pm25 + v_pm1;
 
   char buf[32];
-  int n = snprintf(buf, sizeof(buf), "@PM%04X%04X%04X%04X\r\n",
+  int n = snprintf(buf, sizeof(buf), "R%04X%04X%04X%04XM\r\n",
                    v_pm10, v_pm25, v_pm1, checksum);
 
   // One single write (one USB packet) instead of three separate prints
