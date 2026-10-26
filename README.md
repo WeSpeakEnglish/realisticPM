@@ -26,4 +26,5 @@
 - Fused via resettable fuse
 - Automatic color control via addressing LEDs
 - PM2.5 value display step as low as 0.1 ug/m3
-- Sizes of 364x164mm, ideal for work environment / sport rooms / clean rooms
+- Sizes of 364x164x18 mm, ideal for work environment / sport rooms / clean rooms
+- Panasonic SN-GCJA5 or Sensirion SPS30 PM sensor
