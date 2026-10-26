@@ -1,7 +1,26 @@
 #include <Wire.h>
 #include <Adafruit_NeoPixel.h>
-#include "SparkFun_Particle_Sensor_SN-GCJA5_Arduino_Library.h"
 #include "antirtos.h"
+
+/* ---------------- PM sensor selection ----------------
+   Uncomment exactly ONE of the following lines.
+   - PM_SENSOR_SPS30 : Sensirion SPS30 over I2C (address 0x69, SEL pin -> GND)
+                       Built-in driver below, no extra library needed.
+   - PM_SENSOR_GCJA5 : Panasonic SN-GCJA5 via SparkFun library
+------------------------------------------------------- */
+#define PM_SENSOR_SPS30
+//#define PM_SENSOR_GCJA5
+
+#if defined(PM_SENSOR_SPS30) && defined(PM_SENSOR_GCJA5)
+  #error "Select only one PM sensor"
+#endif
+#if !defined(PM_SENSOR_SPS30) && !defined(PM_SENSOR_GCJA5)
+  #error "Select a PM sensor (PM_SENSOR_SPS30 or PM_SENSOR_GCJA5)"
+#endif
+
+#ifdef PM_SENSOR_GCJA5
+  #include "SparkFun_Particle_Sensor_SN-GCJA5_Arduino_Library.h"
+#endif
 
 /* ---------------- Hardware ---------------- */
 #define PIN 9
@@ -35,11 +54,162 @@ uint16_t dacValue = 400;
 uint8_t brightness = MAX_BRIGHTNESS;
 
 Adafruit_NeoPixel strip(NUM_LEDS, PIN, NEO_GRB + NEO_KHZ800);
-SFE_PARTICLE_SENSOR myAirSensor;
 bool sensorOK = false;
+
+// Latest PM readings (ug/m3), shared by display and serial output
+float pm1_0 = 0.0f;
+float pm2_5 = 0.0f;
+float pm10  = 0.0f;
 
 /* ---------------- Forward declarations ---------------- */
 void displayNumber(int value, uint8_t c, uint8_t brightness);
+
+/* =====================================================================
+   PM sensor drivers
+   Common interface:
+     bool pmSensorBegin();                          -> true if sensor responds
+     bool pmSensorRead(float &p1, float &p25, float &p10); -> true if new data
+   ===================================================================== */
+
+#ifdef PM_SENSOR_SPS30
+/* ---------------- Sensirion SPS30 (I2C) ----------------
+   Protocol: 16-bit command, data in 16-bit words each followed by CRC-8
+   (poly 0x31, init 0xFF). Max I2C clock 100 kHz.
+---------------------------------------------------------- */
+#define SPS30_ADDR              0x69
+#define SPS30_CMD_START_MEAS    0x0010
+#define SPS30_CMD_STOP_MEAS     0x0104
+#define SPS30_CMD_DATA_READY    0x0202
+#define SPS30_CMD_READ_VALUES   0x0300
+#define SPS30_CMD_FAN_CLEAN     0x5607
+#define SPS30_CMD_SERIAL_NUM    0xD033
+#define SPS30_CMD_RESET         0xD304
+#define SPS30_CMD_DELAY_MS      20
+
+static uint8_t sps30ErrorCount = 0;
+#define SPS30_MAX_ERRORS 3            // re-initialise after this many failed reads
+
+static uint8_t sps30Crc(const uint8_t *data, uint8_t len) {
+  uint8_t crc = 0xFF;
+  for (uint8_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (uint8_t b = 0; b < 8; b++)
+      crc = (crc & 0x80) ? (uint8_t)((crc << 1) ^ 0x31) : (uint8_t)(crc << 1);
+  }
+  return crc;
+}
+
+// Send a command with optional argument words (args = 2 bytes per word)
+static bool sps30SendCmd(uint16_t cmd, const uint8_t *args = nullptr, uint8_t nWords = 0) {
+  Wire.beginTransmission(SPS30_ADDR);
+  Wire.write((uint8_t)(cmd >> 8));
+  Wire.write((uint8_t)(cmd & 0xFF));
+  for (uint8_t i = 0; i < nWords; i++) {
+    Wire.write(args[2 * i]);
+    Wire.write(args[2 * i + 1]);
+    Wire.write(sps30Crc(&args[2 * i], 2));
+  }
+  return Wire.endTransmission() == 0;
+}
+
+// Send a command, then read nWords data words (CRC checked, stripped)
+static bool sps30ReadCmd(uint16_t cmd, uint8_t *out, uint8_t nWords) {
+  if (!sps30SendCmd(cmd)) return false;
+  delay(SPS30_CMD_DELAY_MS);
+
+  uint8_t nBytes = nWords * 3;
+  if (Wire.requestFrom((uint8_t)SPS30_ADDR, nBytes) != nBytes) return false;
+
+  for (uint8_t i = 0; i < nWords; i++) {
+    uint8_t w[2];
+    w[0] = Wire.read();
+    w[1] = Wire.read();
+    uint8_t crc = Wire.read();
+    if (crc != sps30Crc(w, 2)) return false;
+    out[2 * i]     = w[0];
+    out[2 * i + 1] = w[1];
+  }
+  return true;
+}
+
+static float sps30BytesToFloat(const uint8_t *b) {
+  uint32_t u = ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
+               ((uint32_t)b[2] << 8)  |  (uint32_t)b[3];
+  float f;
+  memcpy(&f, &u, sizeof(f));
+  return f;
+}
+
+bool pmSensorBegin() {
+  // The MCU may have reset while the sensor kept measuring: stop first
+  // (ignore result - the sensor NACKs if it was already idle).
+  sps30SendCmd(SPS30_CMD_STOP_MEAS);
+  delay(SPS30_CMD_DELAY_MS);
+
+  // Read serial number to confirm communication
+  uint8_t sn[32];
+  if (!sps30ReadCmd(SPS30_CMD_SERIAL_NUM, sn, 16)) return false;
+  sn[31] = 0;
+  Serial.print("SPS30 serial: ");
+  Serial.println((char*)sn);
+
+  // Start measurement, output format = big-endian IEEE754 float (0x0300)
+  const uint8_t fmt[2] = {0x03, 0x00};
+  if (!sps30SendCmd(SPS30_CMD_START_MEAS, fmt, 1)) return false;
+  delay(SPS30_CMD_DELAY_MS);
+
+  sps30ErrorCount = 0;
+  return true;
+}
+
+bool pmSensorRead(float &p1, float &p25, float &p10) {
+  // Data-ready flag: 1 word, second byte = flag
+  uint8_t rdy[2];
+  if (!sps30ReadCmd(SPS30_CMD_DATA_READY, rdy, 1)) goto fail;
+  if (rdy[1] != 0x01) return false;          // no new data yet, keep old values
+
+  {
+    // 10 floats = 20 words = 60 bytes on the bus
+    // Order: PM1.0, PM2.5, PM4.0, PM10 mass [ug/m3],
+    //        NC0.5, NC1.0, NC2.5, NC4.0, NC10 [#/cm3], typical size [um]
+    uint8_t d[40];
+    if (!sps30ReadCmd(SPS30_CMD_READ_VALUES, d, 20)) goto fail;
+
+    p1  = sps30BytesToFloat(&d[0]);
+    p25 = sps30BytesToFloat(&d[4]);
+    // PM4.0 at d[8] is available if needed
+    p10 = sps30BytesToFloat(&d[12]);
+  }
+  sps30ErrorCount = 0;
+  return true;
+
+fail:
+  if (++sps30ErrorCount >= SPS30_MAX_ERRORS) sensorOK = false;  // triggers re-init
+  return false;
+}
+
+// Optional: manual fan cleaning (takes ~10 s, readings invalid meanwhile).
+// The SPS30 also auto-cleans every 168 h of continuous operation by default.
+void pmSensorFanClean() {
+  sps30SendCmd(SPS30_CMD_FAN_CLEAN);
+}
+#endif // PM_SENSOR_SPS30
+
+#ifdef PM_SENSOR_GCJA5
+/* ---------------- Panasonic SN-GCJA5 (SparkFun library) ---------------- */
+SFE_PARTICLE_SENSOR myAirSensor;
+
+bool pmSensorBegin() {
+  return myAirSensor.begin();
+}
+
+bool pmSensorRead(float &p1, float &p25, float &p10) {
+  p1  = myAirSensor.getPM1_0();
+  p25 = myAirSensor.getPM2_5();
+  p10 = myAirSensor.getPM10();
+  return true;
+}
+#endif // PM_SENSOR_GCJA5
 
 /* ---------------- 7-segment map ---------------- */
 const uint8_t digit_segments[10][7] = {
@@ -62,7 +232,6 @@ bool bufferFilled = false;
 float pmBuffer[PM_FILTER_SIZE];
 uint8_t pmIndex = 0;
 bool pmBufferFilled = false;
-float pm2_5 = 0.0f;
 
 /* ---------------- LED test ---------------- */
 void ledCheck() {
@@ -136,8 +305,13 @@ void setup() {
 
   delay(100);                    // let the sensor boot
   Wire.begin();
-  sensorOK = myAirSensor.begin();
-  Serial.print("Start. Sensor begin: ");
+  Wire.setClock(100000);         // SPS30 max 100 kHz (also fine for GCJA5)
+  sensorOK = pmSensorBegin();
+#ifdef PM_SENSOR_SPS30
+  Serial.print("Start. Sensor SPS30 begin: ");
+#else
+  Serial.print("Start. Sensor SN-GCJA5 begin: ");
+#endif
   Serial.println(sensorOK ? "OK" : "FAILED");
 
   strip.begin();
@@ -182,7 +356,18 @@ void calculateAnalog() {
 
 /* ---------------- PM handling ---------------- */
 void updatePM() {
-  pm2_5 = myAirSensor.getPM2_5();
+  // Recover if the sensor was missing at boot or stopped responding
+  if (!sensorOK) {
+    sensorOK = pmSensorBegin();
+    if (!sensorOK) return;       // keep last values
+  }
+
+  float p1, p25, p10;
+  if (pmSensorRead(p1, p25, p10)) {
+    pm1_0 = p1;
+    pm2_5 = p25;
+    pm10  = p10;
+  }
 }
 
 void displayPM() {
@@ -240,14 +425,18 @@ void displayNumber(int value, uint8_t c, uint8_t brightness) {
 }
 
 /* ---------------- Serial output ---------------- */
-void sendPMtoSerial() {
-  float pm1  = myAirSensor.getPM1_0();
-  float pm25 = myAirSensor.getPM2_5();
-  float pm10 = myAirSensor.getPM10();
+static uint16_t pmToWire(float v) {
+  if (v < 0.0f) v = 0.0f;
+  float x = v * 10.0f + 0.5f;
+  if (x > 65535.0f) x = 65535.0f;
+  return (uint16_t)x;
+}
 
-  uint16_t v_pm10 = (uint16_t)(pm10 * 10.0f + 0.5f);
-  uint16_t v_pm25 = (uint16_t)(pm25 * 10.0f + 0.5f);
-  uint16_t v_pm1  = (uint16_t)(pm1  * 10.0f + 0.5f);
+void sendPMtoSerial() {
+  // Uses values cached by updatePM() - no second sensor read
+  uint16_t v_pm10 = pmToWire(pm10);
+  uint16_t v_pm25 = pmToWire(pm2_5);
+  uint16_t v_pm1  = pmToWire(pm1_0);
   uint16_t checksum = v_pm10 + v_pm25 + v_pm1;
 
   char buf[32];
